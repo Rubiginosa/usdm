@@ -4,6 +4,7 @@
 
 import argparse
 import librosa
+import os
 import re
 from scipy.io.wavfile import write
 from seamless_communication.models.unit_extractor import UnitExtractor
@@ -44,17 +45,69 @@ def generate_bad_words_ids(start, end, exclude=[]):
         bad_words_ids.pop(e)
     return bad_words_ids
 
+timestamps = {
+  "afrikaans1.mp3": 10.5,
+  "afrikaans2.mp3": 12,
+  "afrikaans3.mp3": 14.5,
+  "afrikaans4.mp3": 11.75,
+  "afrikaans5.mp3": 10.25,
+  "hindi1.mp3": 12,
+  "hindi2.mp3": 13,
+  "hindi3.mp3": 12,
+  "hindi4.mp3": 16,
+  "hindi5.mp3": 15.5,
+  "hindi6.mp3": 12.25,
+  "hindi7.mp3": 15,
+  "hindi8.mp3": 10.75,
+  "hindi9.mp3": 10.5,
+  "hindi10.mp3": 11.5,
+  "english1.mp3": 11,
+  "english2.mp3": 10.5,
+  "english3.mp3": 9.25,
+  "english4.mp3": 18,
+  "english5.mp3": 16,
+  "english6.mp3": 12,
+  "english7.mp3": 13,
+  "english8.mp3": 10,
+  "english9.mp3": 13.5,
+  "english10.mp3": 11,
+  "korean1.mp3": 19,
+  "korean2.mp3": 14.5,
+  "korean3.mp3": 12.75,
+  "korean4.mp3": 14,
+  "korean5.mp3": 18.5,
+  "korean6.mp3": 12.25,
+  "korean7.mp3": 13,
+  "korean8.mp3": 23,
+  "korean9.mp3": 11,
+  "korean10.mp3": 21,
+  "spanish1.mp3": 17,
+  "spanish2.mp3": 18.5,
+  "spanish3.mp3": 18.5,
+  "spanish4.mp3": 24,
+  "spanish5.mp3": 13.25,
+  "spanish6.mp3": 15,
+  "spanish7.mp3": 17.5,
+  "spanish8.mp3": 14.75,
+  "spanish9.mp3": 19,
+  "spanish10.mp3": 16.5,
+
+}
 
 @torch.inference_mode()
-def sample(user_path, reference_path, model, unit_extractor, voicebox, vocoder, tokenizer, output_path):
+def sample(user_path, reference_path, model, unit_extractor, voicebox, vocoder, tokenizer):
+    
+    
     # Define bad words IDs for filtering in generation
     bad_words_ids_unit2text = generate_bad_words_ids(32000, 42003)
     bad_words_ids_text2text = generate_bad_words_ids(32002, 42003)
     bad_words_ids_text2unit = generate_bad_words_ids(0, 32002, exclude=[28705])
 
     pattern = re.compile(r"<\|unit(\d+)\|>")
-
-    user_wav, sr = librosa.load(user_path, sr=16000)
+    if os.path.basename(user_path) in timestamps:
+      user_wav, sr = librosa.load(user_path, sr=16000, duration=timestamps[os.path.basename(user_path)])
+    else:
+      user_wav, sr = librosa.load(user_path, sr=16000)
     user_unit = ''.join(
         [f'<|unit{i}|>' for i in unit_extractor.predict(torch.FloatTensor(user_wav).to(device), 35 - 1).cpu().tolist()])
 
@@ -66,6 +119,9 @@ def sample(user_path, reference_path, model, unit_extractor, voicebox, vocoder, 
                              eos_token_id=tokenizer("\n").input_ids[-1])
     user_text = strip_exact_multiple(tokenizer.decode(outputs[0]).split("<|correspond|>")[-1], ["\n", " "])
 
+    with open(f'{user_path}.user_text', 'w') as f:
+      f.write(user_text)
+
     model_inputs = {}
     model_input = default_template(user_unit=user_unit, user_text=user_text)
     model_inputs["input_ids"] = torch.LongTensor(tokenizer(model_input).input_ids).to(device).unsqueeze(0)
@@ -73,6 +129,9 @@ def sample(user_path, reference_path, model, unit_extractor, voicebox, vocoder, 
                              bad_words_ids=bad_words_ids_text2text, top_p=1.0, top_k=1, temperature=1.0,
                              eos_token_id=tokenizer("<|correspond|>").input_ids[-1])
     agent_text = strip_exact_multiple(tokenizer.decode(outputs[0]).split("\n")[-1], ["\n", " ", "<|correspond|>"])
+
+    with open(f'{user_path}.agent_text', 'w') as f:
+      f.write(agent_text)
 
     model_inputs = {}
     model_input = default_template(user_unit=user_unit, user_text=user_text, agent_text=agent_text)
@@ -86,7 +145,7 @@ def sample(user_path, reference_path, model, unit_extractor, voicebox, vocoder, 
     agent_unit = torch.LongTensor(matches).to(device)
     audio = reconstruct_speech(agent_unit, device, reference_path, unit_extractor, voicebox, vocoder, n_timesteps=50)
 
-    write(output_path, vocoder.h.sampling_rate, audio)
+    write(f'{user_path}.response', vocoder.h.sampling_rate, audio)
 
 
 if __name__ == "__main__":
@@ -116,7 +175,6 @@ if __name__ == "__main__":
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path='naver-ai/USDM-DailyTalk',
         cache_dir=args.model_cache_dir,
-        attn_implementation="flash_attention_2",
         torch_dtype=torch.bfloat16,
         device_map="auto",
         low_cpu_mem_usage=True
@@ -128,7 +186,15 @@ if __name__ == "__main__":
         cache_dir=args.model_cache_dir
     )
 
-    try:
-        sample(args.input_path, args.reference_path, model, unit_extractor, voicebox, vocoder, tokenizer, args.output_path)
-    except Exception as e:
-        print(f"Error while sampling: {e}")
+    directory = args.input_path
+
+    for file in os.listdir(args.input_path):
+      filename = os.fsdecode(file)
+      print(filename)
+      if os.path.splitext(filename)[1] == '.mp3':
+        sample(os.path.join(directory, filename), args.reference_path, model, unit_extractor, voicebox, vocoder, tokenizer)
+
+
+    # try:
+    # except Exception as e:
+    #     print(f"Error while sampling: {e}")
