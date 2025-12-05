@@ -9,6 +9,7 @@ Csammat1:
 - created whispr notebook
 - prepared paper
 
+Original work is copyright NAVER Cloud Corp.
 ### License
 ```
 USDM
